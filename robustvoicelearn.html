@@ -1,0 +1,171 @@
+ <!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>NOISE-ROBUST LEARN v1.0</title>
+  <style>
+    body {
+      background: black;
+      color: #0f0;
+      font-family: 'Courier New', monospace;
+      padding: 16px;
+      margin: 0;
+      line-height: 1.5;
+    }
+    #status { color: #ff0; margin: 8px 0; }
+    #log { margin-top: 16px; max-height: 180px; overflow-y: auto; }
+    .heard { color: #0af; }
+    .spoken { color: #0f0; }
+    .match { color: #fa0; }
+  </style>
+</head>
+<body>
+  <h1>NOISE-ROBUST LEARN v1.0</h1>
+  <div id="status">INITIALIZING...</div>
+  <div id="log"></div>
+
+  <script>
+    // === FUZZY MATCHING UTILS ===
+    function levenshtein(a, b) {
+      if (a.length === 0) return b.length;
+      if (b.length === 0) return a.length;
+      const matrix = Array(b.length + 1).fill().map((_, i) => [i]);
+      for (let j = 0; j <= a.length; j++) matrix[0][j] = j;
+      for (let i = 1; i <= b.length; i++) {
+        for (let j = 1; j <= a.length; j++) {
+          const cost = a[j - 1] === b[i - 1] ? 0 : 1;
+          matrix[i][j] = Math.min(
+            matrix[i - 1][j] + 1,
+            matrix[i][j - 1] + 1,
+            matrix[i - 1][j - 1] + cost
+          );
+        }
+      }
+      return matrix[b.length][a.length];
+    }
+
+    function fuzzyMatch(input, candidates, maxDist = 2) {
+      if (!candidates.length) return null;
+      let best = null;
+      let bestScore = Infinity;
+      for (const cand of candidates) {
+        const d = levenshtein(input.toLowerCase(), cand.toLowerCase());
+        const norm = d / Math.max(input.length, cand.length);
+        if (d <= maxDist && norm < 0.5 && d < bestScore) {
+          bestScore = d;
+          best = cand;
+        }
+      }
+      return best;
+    }
+
+    // === CORE SYSTEM ===
+    const db = JSON.parse(localStorage.getItem('fuzzyWordNum')) || {};
+    let mode = 'LEARN'; // 'LEARN' or 'ACT'
+    let state = 'IDLE'; // 'IDLE', 'AWAITING_WORD', 'AWAITING_NUMBER'
+    let pendingWord = '';
+
+    const log = (msg, cls = '') => {
+      const el = document.createElement('div');
+      el.textContent = `> ${msg}`;
+      el.className = cls;
+      document.getElementById('log').appendChild(el);
+      el.scrollIntoView();
+    };
+
+    const speak = (txt) => {
+      log(`SPEAK: "${txt}"`, 'spoken');
+      if ('speechSynthesis' in window) {
+        speechSynthesis.cancel();
+        const msg = new SpeechSynthesisUtterance(txt);
+        msg.lang = 'en-US';
+        msg.rate = 0.9;
+        speechSynthesis.speak(msg);
+      }
+    };
+
+    const setStatus = (txt) => {
+      document.getElementById('status').textContent = `MODE: ${mode} | STATE: ${txt}`;
+    };
+
+    // === SPEECH RECOGNITION ===
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      alert('SpeechRecognition not supported. Use Chrome/Edge.');
+    } else {
+      const rec = new SpeechRecognition();
+      rec.continuous = true;
+      rec.interimResults = false;
+      rec.lang = 'en-US';
+
+      rec.onresult = (event) => {
+        const transcript = event.results[event.resultIndex][0].transcript.trim();
+        if (!transcript) return;
+
+        log(`HEARD: "${transcript}"`, 'heard');
+
+        // Handle mode/state logic
+        if (transcript.toLowerCase().includes('learn mode')) {
+          mode = 'LEARN';
+          state = 'IDLE';
+          speak('LEARN MODE ACTIVATED');
+          setStatus('READY');
+          return;
+        }
+
+        if (transcript.toLowerCase().includes('act mode')) {
+          mode = 'ACT';
+          state = 'IDLE';
+          speak('ACT MODE ACTIVATED');
+          setStatus('READY');
+          return;
+        }
+
+        if (mode === 'LEARN') {
+          if (state === 'IDLE' || state === 'AWAITING_WORD') {
+            pendingWord = transcript;
+            state = 'AWAITING_NUMBER';
+            speak(`ASSOCIATE NUMBER FOR: ${transcript}`);
+            setStatus('SAY NUMBER');
+          } else if (state === 'AWAITING_NUMBER') {
+            const num = parseFloat(transcript.replace(/[^0-9.-]/g, ''));
+            if (isNaN(num)) {
+              speak('INVALID NUMBER. REPEAT.');
+              setStatus('SAY NUMBER AGAIN');
+            } else {
+              db[pendingWord] = num;
+              localStorage.setItem('fuzzyWordNum', JSON.stringify(db));
+              speak(`STORED: ${pendingWord} EQUALS ${num}`);
+              state = 'IDLE';
+              setStatus('READY');
+            }
+          }
+        } else if (mode === 'ACT') {
+          const candidates = Object.keys(db);
+          const match = fuzzyMatch(transcript, candidates, 2);
+          if (match !== null) {
+            const num = db[match];
+            log(`MATCH: "${transcript}" ≈ "${match}"`, 'match');
+            speak(`${num}`);
+          } else {
+            speak('WORD NOT RECOGNIZED');
+          }
+          setStatus('READY');
+        }
+      };
+
+      rec.onerror = (event) => {
+        log(`ERROR: ${event.error}`, 'spoken');
+        if (event.error === 'no-speech') rec.start();
+      };
+
+      rec.onend = () => rec.start(); // auto-restart
+
+      // Start listening
+      rec.start();
+      speak('SYSTEM ONLINE. SAY LEARN MODE OR ACT MODE');
+      setStatus('READY');
+    }
+  </script>
+</body>
+</html>
